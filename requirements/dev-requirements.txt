@@ -108,7 +108,7 @@ ipython==7.16.1           # via -r dev-requirements.in, ipdb
 iso8601==0.1.13           # via -r requirements.in
 jdcal==1.4.1              # via openpyxl
 jedi==0.17.2              # via ipython
-jenkinsapi==0.2.28        # via -r dev-requirements.in
+jenkinsapi==0.3.11        # via -r dev-requirements.in
 jinja2==2.11.2            # via -r requirements.in, sphinx
 jmespath==0.10.0          # via boto3, botocore
 json-delta==2.0           # via -r requirements.in
@@ -190,7 +190,7 @@ sentry-sdk==0.19.4        # via -r requirements.in
 sh==1.9                   # via -r requirements.in, git-build-branch
 simpleeval==0.9.10        # via -r requirements.in
 simplejson==3.17.2        # via -r requirements.in, django-prbac
-six==1.15.0               # via -r requirements.in, django-braces, django-simple-captcha, django-statici18n, django-transfer, django-websocket-redis, dropbox, ethiopian-date-converter, eulxml, faker, fixture, freezegun, ghdiff, html5lib, jsonfield, jsonobject, jsonobject-couchdbkit, jsonpath-rw, mock, packaging, pip-tools, protobuf, python-dateutil, pyzxcvbn, qrcode, quickcache, requests-mock, sqlalchemy-postgres-copy, tenacity, traitlets, transifex-client, twilio, unittest2
+six==1.15.0               # via -r requirements.in, django-braces, django-simple-captcha, django-statici18n, django-transfer, django-websocket-redis, dropbox, ethiopian-date-converter, eulxml, faker, fixture, freezegun, ghdiff, html5lib, jenkinsapi, jsonfield, jsonobject, jsonobject-couchdbkit, jsonpath-rw, mock, packaging, pip-tools, protobuf, python-dateutil, pyzxcvbn, qrcode, quickcache, requests-mock, sqlalchemy-postgres-copy, tenacity, traitlets, transifex-client, twilio, unittest2
 smartypants==2.0.1        # via pycco
 sniffer==0.4.1            # via -r dev-requirements.in
 snowballstemmer==2.0.0    # via sphinx
