@@ -63,12 +63,15 @@ class.
 "Data Forwarding Records".
 
 """
-import re
+import io
+import traceback
 import warnings
 from datetime import datetime, timedelta
+from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from django.db import models
+from django.utils import timezone
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 
@@ -114,6 +117,7 @@ from corehq.util.metrics import metrics_counter
 from corehq.util.quickcache import quickcache
 
 from .const import (
+    MAX_ATTEMPTS,
     MAX_RETRY_WAIT,
     MIN_RETRY_WAIT,
     RECORD_CANCELLED_STATE,
@@ -181,6 +185,29 @@ class SQLRepeaterStub(models.Model):
         indexes = [
             models.Index(fields=['domain', 'couch_id']),
         ]
+
+    @property
+    @memoized
+    def couch_repeater(self):
+        return Repeater.get(self.couch_id)
+
+    @property
+    def repeat_records_to_forward(self):
+        return self.repeat_records.filter(state__in=[RECORD_PENDING_STATE,
+                                                     RECORD_FAILURE_STATE])
+
+    def set_next_attempt(self):
+        now = datetime.utcnow()
+        interval = _get_retry_interval(self.last_attempt_at, now)
+        self.last_attempt_at = now
+        self.next_attempt_at = now + interval
+        self.save()
+
+    def reset_next_attempt(self):
+        if self.last_attempt_at or self.next_attempt_at:
+            self.last_attempt_at = None
+            self.next_attempt_at = None
+            self.save()
 
 
 class Repeater(QuickCachedDocumentMixin, Document):
@@ -959,6 +986,60 @@ class SQLRepeatRecord(models.Model):
     class Meta:
         ordering = ['registered_at']
 
+    def add_success_attempt(self, response):
+        """
+        ``response`` can be a Requests response instance, or True if the
+        payload did not result in an API call.
+        """
+        self.repeater.reset_next_attempt()
+        self.attempts.create(
+            state=RECORD_SUCCESS_STATE,
+            message=format_response(response),
+        )
+
+    def add_failure_attempt(self, message):
+        if self.num_attempts < MAX_ATTEMPTS:
+            state = RECORD_FAILURE_STATE
+            self.set_next_attempt()
+        else:
+            state = RECORD_CANCELLED_STATE
+        self.attempts.create(
+            state=state,
+            message=message,
+        )
+
+    def add_payload_exception_attempt(self, exc_info):
+        with io.StringIO() as f:
+            traceback.print_exception(*exc_info, file=f)
+            tb_str = f.getvalue()
+        exc_value = exc_info[1]
+        self.attempts.create(
+            state=RECORD_CANCELLED_STATE,
+            message=str(exc_value),
+            traceback=tb_str,
+        )
+
+    @property
+    def num_attempts(self):
+        return self.attempts.count()
+
+    def cancel(self):
+        self.state = RECORD_CANCELLED_STATE
+        self.save()
+
+    def set_next_attempt(self):
+        # TODO: ...
+        pass
+
+
+class SQLRepeatRecordAttempt(models.Model):
+    repeat_record = models.ForeignKey(
+        SQLRepeatRecord, on_delete=models.CASCADE, related_name='attempts')
+    state = models.TextField(choices=RECORD_STATES)
+    message = models.TextField(default='')
+    traceback = models.TextField(default='')
+    created_at = models.DateTimeField(default=timezone.now)
+
 
 def _get_retry_interval(last_checked, now):
     """
@@ -983,7 +1064,17 @@ def attempt_forward_now(repeater: SQLRepeaterStub):
     """
     Attempt to send SQLRepeatRecords in chronological order.
     """
-    pass
+    from corehq.motech.repeaters.tasks import process_repeater
+
+    def is_ready_for_next_attempt():
+        return (repeater.next_attempt_at is None
+                or repeater.next_attempt_at < datetime.utcnow())
+
+    if repeater.is_paused:
+        return
+    if not is_ready_for_next_attempt():
+        return
+    process_repeater.delay()
 
 
 def is_response(duck):
@@ -992,6 +1083,13 @@ def is_response(duck):
     instance that this module uses, otherwise False.
     """
     return hasattr(duck, 'status_code') and hasattr(duck, 'reason')
+
+
+def format_response(response) -> Optional[str]:
+    if not is_response(response):
+        return None
+    response_text = getattr(response, "text", "")
+    return f'{response.status_code}: {response.reason}\n{response_text}'
 
 
 # import signals

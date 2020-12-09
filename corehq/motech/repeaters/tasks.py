@@ -1,21 +1,23 @@
+import sys
 from datetime import datetime, timedelta
+from typing import Any
 
 from django.conf import settings
 
 from celery.schedules import crontab
 from celery.task import periodic_task, task
 from celery.utils.log import get_task_logger
+from requests.exceptions import ConnectionError, Timeout
 
 from dimagi.utils.couch import get_redis_lock
 from dimagi.utils.couch.undo import DELETED_SUFFIX
 
-from corehq.apps.accounting.models import Subscription
 from corehq.apps.accounting.utils import domain_has_privilege
-from corehq.apps.hqwebapp.tasks import send_mail_async
 from corehq.motech.models import RequestLog
 from corehq.motech.repeaters.const import (
     CHECK_REPEATERS_INTERVAL,
     CHECK_REPEATERS_KEY,
+    MAX_ATTEMPTS,
     MAX_RETRY_WAIT,
     RECORD_FAILURE_STATE,
     RECORD_PENDING_STATE,
@@ -23,6 +25,17 @@ from corehq.motech.repeaters.const import (
 from corehq.motech.repeaters.dbaccessors import (
     get_overdue_repeat_record_count,
     iterate_repeat_records,
+)
+from corehq.motech.repeaters.exceptions import RequestConnectionError
+from corehq.motech.repeaters.models import (
+    Repeater,
+    SQLRepeaterStub,
+    SQLRepeatRecord,
+    format_response,
+    is_response,
+    log_repeater_error_in_datadog,
+    log_repeater_success_in_datadog,
+    log_repeater_timeout_in_datadog,
 )
 from corehq.privileges import DATA_FORWARDING, ZAPIER_INTEGRATION
 from corehq.util.metrics import (
@@ -156,3 +169,77 @@ repeaters_overdue = metrics_gauge_task(
     run_every=crontab(),  # every minute
     multiprocess_mode=MPM_MAX
 )
+
+
+@task(serializer='pickle', queue=settings.CELERY_REPEAT_RECORD_QUEUE)
+def process_repeater(repeater: SQLRepeaterStub):
+    """
+    Send SQLRepeatRecords in chronological order.
+    """
+    if not (domain_has_privilege(repeater.domain, ZAPIER_INTEGRATION)
+            or domain_has_privilege(repeater.domain, DATA_FORWARDING)):
+        return
+
+    for repeat_record in repeater.repeat_records_to_forward:
+        if (
+            repeat_record.state == RECORD_FAILURE_STATE
+            and repeat_record.num_attempts >= MAX_ATTEMPTS
+        ):
+            repeat_record.cancel()
+            continue
+        payload = get_payload(repeater.couch_repeater, repeat_record)
+        send_request(repeater.couch_repeater, repeat_record, payload)
+
+
+def get_payload(repeater: Repeater, repeat_record: SQLRepeatRecord) -> Any:
+    try:
+        return repeater.get_payload(repeat_record)
+    except Exception:
+        log_repeater_error_in_datadog(
+            repeater.domain,
+            status_code=None,
+            repeater_type=repeater.__class__.__name__
+        )
+        repeat_record.add_payload_exception_attempt(sys.exc_info())
+        raise
+
+
+def send_request(
+    repeater: Repeater,
+    repeat_record: SQLRepeatRecord,
+    payload: Any,
+):
+
+    def is_success(response):
+        return (
+            is_response(response)
+            and 200 <= response.status_code < 300
+            # `response` is `True` if the payload did not need to be
+            # sent. (This can happen, for example, with DHIS2 if the
+            # form that triggered the forwarder doesn't contain data
+            # for a DHIS2 Event.)
+            or response is True
+        )
+
+    try:
+        response = repeater.send_request(repeat_record, payload)
+    except (Timeout, ConnectionError) as err:
+        log_repeater_timeout_in_datadog(repeat_record.domain)
+        message = str(RequestConnectionError(err))
+        repeat_record.add_failure_attempt(message)
+    except Exception as err:
+        repeat_record.add_failure_attempt(str(err))
+    else:
+        if is_success(response):
+            if is_response(response):
+                # Don't bother logging success in
+                # Datadog if the payload wasn't sent.
+                log_repeater_success_in_datadog(
+                    repeater.domain,
+                    response.status_code,
+                    repeater_type=repeater.__class__.__name__
+                )
+            repeat_record.add_success_attempt(response)
+        else:
+            message = format_response(response)
+            repeat_record.add_failure_attempt(message)
