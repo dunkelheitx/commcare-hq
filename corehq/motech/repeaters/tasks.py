@@ -171,6 +171,15 @@ repeaters_overdue = metrics_gauge_task(
 )
 
 
+@periodic_task(
+    run_every=CHECK_REPEATERS_INTERVAL,
+    queue=settings.CELERY_PERIODIC_QUEUE,
+)
+def check_sql_repeaters():
+    for repeater in SQLRepeaterStub.objects.all_ready():
+        process_repeater.delay(repeater)
+
+
 @task(serializer='pickle', queue=settings.CELERY_REPEAT_RECORD_QUEUE)
 def process_repeater(repeater: SQLRepeaterStub):
     """
@@ -180,7 +189,7 @@ def process_repeater(repeater: SQLRepeaterStub):
             or domain_has_privilege(repeater.domain, DATA_FORWARDING)):
         return
 
-    for repeat_record in repeater.repeat_records_to_forward:
+    for repeat_record in repeater.repeat_records_ready:
         if (
             repeat_record.state == RECORD_FAILURE_STATE
             and repeat_record.num_attempts >= MAX_ATTEMPTS

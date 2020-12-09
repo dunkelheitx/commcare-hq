@@ -167,6 +167,19 @@ def log_repeater_success_in_datadog(domain, status_code, repeater_type):
     })
 
 
+class RepeaterManager(models.Manager):
+
+    def all_ready(self):
+        """
+        Return all SQLRepeaterStubs ready to be forwarded.
+        """
+        now = datetime.utcnow()
+        return (self.get_queryset()
+                .filter(is_paused=False)
+                .filter(models.Q(next_attempt_at__isnull=True)
+                        | models.Q(next_attempt_at__lte=now)))
+
+
 class SQLRepeaterStub(models.Model):
     """
     This model is used to join SQLRepeatRecords. It does not reproduce
@@ -181,6 +194,8 @@ class SQLRepeaterStub(models.Model):
     next_attempt_at = models.DateTimeField(null=True, blank=True)
     last_attempt_at = models.DateTimeField(null=True, blank=True)
 
+    objects = RepeaterManager()
+
     class Meta:
         indexes = [
             models.Index(fields=['domain', 'couch_id']),
@@ -192,9 +207,14 @@ class SQLRepeaterStub(models.Model):
         return Repeater.get(self.couch_id)
 
     @property
-    def repeat_records_to_forward(self):
+    def repeat_records_ready(self):
         return self.repeat_records.filter(state__in=[RECORD_PENDING_STATE,
                                                      RECORD_FAILURE_STATE])
+
+    @property
+    def is_ready(self):
+        return (self.next_attempt_at is None
+                or self.next_attempt_at < datetime.utcnow())
 
     def set_next_attempt(self):
         now = datetime.utcnow()
@@ -1066,15 +1086,11 @@ def attempt_forward_now(repeater: SQLRepeaterStub):
     """
     from corehq.motech.repeaters.tasks import process_repeater
 
-    def is_ready_for_next_attempt():
-        return (repeater.next_attempt_at is None
-                or repeater.next_attempt_at < datetime.utcnow())
-
     if repeater.is_paused:
         return
-    if not is_ready_for_next_attempt():
+    if not repeater.is_ready:
         return
-    process_repeater.delay()
+    process_repeater.delay(repeater)
 
 
 def is_response(duck):
