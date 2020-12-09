@@ -1016,17 +1016,21 @@ class SQLRepeatRecord(models.Model):
             state=RECORD_SUCCESS_STATE,
             message=format_response(response),
         )
+        self.state = RECORD_SUCCESS_STATE
+        self.save()
 
     def add_failure_attempt(self, message):
         if self.num_attempts < MAX_ATTEMPTS:
             state = RECORD_FAILURE_STATE
-            self.set_next_attempt()
+            self.repeater.set_next_attempt()
         else:
             state = RECORD_CANCELLED_STATE
         self.attempts.create(
             state=state,
             message=message,
         )
+        self.state = state
+        self.save()
 
     def add_payload_exception_attempt(self, exc_info):
         with io.StringIO() as f:
@@ -1038,18 +1042,12 @@ class SQLRepeatRecord(models.Model):
             message=str(exc_value),
             traceback=tb_str,
         )
+        self.state = RECORD_CANCELLED_STATE
+        self.save()
 
     @property
     def num_attempts(self):
         return self.attempts.count()
-
-    def cancel(self):
-        self.state = RECORD_CANCELLED_STATE
-        self.save()
-
-    def set_next_attempt(self):
-        # TODO: ...
-        pass
 
 
 class SQLRepeatRecordAttempt(models.Model):

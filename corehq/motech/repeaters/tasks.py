@@ -17,10 +17,11 @@ from corehq.motech.models import RequestLog
 from corehq.motech.repeaters.const import (
     CHECK_REPEATERS_INTERVAL,
     CHECK_REPEATERS_KEY,
-    MAX_ATTEMPTS,
     MAX_RETRY_WAIT,
+    NEXT_REPEATER_AFTER_RECORDS,
     RECORD_FAILURE_STATE,
     RECORD_PENDING_STATE,
+    RECORD_SUCCESS_STATE,
 )
 from corehq.motech.repeaters.dbaccessors import (
     get_overdue_repeat_record_count,
@@ -189,15 +190,18 @@ def process_repeater(repeater: SQLRepeaterStub):
             or domain_has_privilege(repeater.domain, DATA_FORWARDING)):
         return
 
-    for repeat_record in repeater.repeat_records_ready:
-        if (
-            repeat_record.state == RECORD_FAILURE_STATE
-            and repeat_record.num_attempts >= MAX_ATTEMPTS
-        ):
-            repeat_record.cancel()
-            continue
+    for i, repeat_record in enumerate(repeater.repeat_records_ready):
         payload = get_payload(repeater.couch_repeater, repeat_record)
-        send_request(repeater.couch_repeater, repeat_record, payload)
+        success = send_request(repeater.couch_repeater, repeat_record, payload)
+        if not success:
+            # Don't move on to the next repeat_record; retry this one
+            # later.
+            break
+        if i >= NEXT_REPEATER_AFTER_RECORDS:
+            # If there are more than 1000 repeat records to be sent,
+            # give the next repeater a turn, and come back to the rest
+            # of the repeat records later.
+            break
 
 
 def get_payload(repeater: Repeater, repeat_record: SQLRepeatRecord) -> Any:
@@ -217,7 +221,7 @@ def send_request(
     repeater: Repeater,
     repeat_record: SQLRepeatRecord,
     payload: Any,
-):
+) -> bool:
 
     def is_success(response):
         return (
@@ -252,3 +256,4 @@ def send_request(
         else:
             message = format_response(response)
             repeat_record.add_failure_attempt(message)
+    return repeat_record.state == RECORD_SUCCESS_STATE
