@@ -979,6 +979,13 @@ def _get_retry_interval(last_checked, now):
     return interval
 
 
+def attempt_forward_now(repeater: SQLRepeaterStub):
+    """
+    Attempt to send SQLRepeatRecords in chronological order.
+    """
+    pass
+
+
 def is_response(duck):
     """
     Returns True if ``duck`` has the attributes of a Requests response
