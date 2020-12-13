@@ -68,6 +68,7 @@ import warnings
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from django.db import models
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 
@@ -118,6 +119,7 @@ from .const import (
     RECORD_CANCELLED_STATE,
     RECORD_FAILURE_STATE,
     RECORD_PENDING_STATE,
+    RECORD_STATES,
     RECORD_SUCCESS_STATE,
 )
 from .dbaccessors import (
@@ -159,6 +161,26 @@ def log_repeater_success_in_datadog(domain, status_code, repeater_type):
         'status_code': status_code,
         'repeater_type': repeater_type,
     })
+
+
+class SQLRepeaterStub(models.Model):
+    """
+    This model is used to join SQLRepeatRecords. It does not reproduce
+    the behaviour of Repeater classes or instances.
+
+    It is created when its first SQLRepeatRecord is registered. See
+    ``Repeater.register()``.
+    """
+    domain = models.CharField(max_length=25)  # UI prevents longer domain names
+    couch_id = models.CharField(max_length=36)  # Max length of a UUID
+    is_paused = models.BooleanField(default=False)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['domain', 'couch_id']),
+        ]
 
 
 class Repeater(QuickCachedDocumentMixin, Document):
@@ -922,6 +944,20 @@ class RepeatRecord(Document):
         self.failure_reason = ''
         self.overall_tries = 0
         self.next_check = datetime.utcnow()
+
+
+class SQLRepeatRecord(models.Model):
+    domain = models.CharField(max_length=25)
+    repeater = models.ForeignKey(SQLRepeaterStub,
+                                 on_delete=models.CASCADE,
+                                 related_name='repeat_records')
+    payload_id = models.CharField(max_length=36)
+    state = models.TextField(choices=RECORD_STATES,
+                             default=RECORD_PENDING_STATE)
+    registered_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ['registered_at']
 
 
 def _get_retry_interval(last_checked, now):
