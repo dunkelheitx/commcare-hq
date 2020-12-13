@@ -320,21 +320,32 @@ class Repeater(QuickCachedDocumentMixin, Document):
         return None
 
     def register(self, payload):
+        """
+        Registers a SQLRepeatRecord. If it is the first SQLRepeatRecord
+        for a Repeater, this method also creates a SQLRepeaterStub for
+        this Repeater.
+        """
         if not self.allowed_to_forward(payload):
             return
 
         now = datetime.utcnow()
-        repeat_record = RepeatRecord(
-            repeater_id=self.get_id,
-            repeater_type=self.doc_type,
+        try:
+            repeater = SQLRepeaterStub.objects.get(
+                domain=self.domain,
+                couch_id=self.get_id,
+            )
+        except SQLRepeaterStub.DoesNotExist:
+            repeater = SQLRepeaterStub.objects.create(
+                domain=self.domain,
+                couch_id=self.get_id,
+                is_paused=self.paused,
+            )
+        repeater.repeat_records.create(
             domain=self.domain,
-            registered_on=now,
-            next_check=now,
-            payload_id=payload.get_id
+            payload_id=payload.get_id,
+            registered_at=now,
         )
-        repeat_record.save()
-        repeat_record.attempt_forward_now()
-        return repeat_record
+        attempt_forward_now(repeater)
 
     def allowed_to_forward(self, payload):
         """
